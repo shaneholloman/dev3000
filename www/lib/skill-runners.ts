@@ -358,6 +358,7 @@ function normalizeTeamState(raw: SkillRunnerTeamState | null, team: DevAgentTeam
   const workerStatus =
     raw.settings?.workerStatus === "provisioning" ||
     raw.settings?.workerStatus === "ready" ||
+    raw.settings?.workerStatus === "outdated" ||
     raw.settings?.workerStatus === "error" ||
     raw.settings?.workerStatus === "unconfigured"
       ? raw.settings.workerStatus
@@ -426,6 +427,7 @@ export async function updateSkillRunnerTeamSettings(
   const workerStatus =
     input.workerStatus === "provisioning" ||
     input.workerStatus === "ready" ||
+    input.workerStatus === "outdated" ||
     input.workerStatus === "error" ||
     input.workerStatus === "unconfigured"
       ? input.workerStatus

@@ -1,9 +1,12 @@
 import { execFileSync } from "node:child_process"
 import {
+  SKILL_RUNNER_RUNTIME_MANIFEST_VERSION,
   SKILL_RUNNER_WORKER_MODE_ENV,
   SKILL_RUNNER_WORKER_PROJECT_NAME,
   SKILL_RUNNER_WORKER_REPO,
-  SKILL_RUNNER_WORKER_ROOT_DIRECTORY
+  SKILL_RUNNER_WORKER_ROOT_DIRECTORY,
+  type SkillRunnerWorkerStatus,
+  type SkillRunnerWorkerVersionPayload
 } from "@/lib/skill-runner-config"
 import type { VercelTeam } from "@/lib/vercel-teams"
 
@@ -58,6 +61,19 @@ type VercelProjectLookupDeployment = NonNullable<VercelProjectLookupProject["lat
 interface VercelProjectCreateResponse {
   id?: string
   name?: string
+}
+
+interface VercelDeploymentDetailsResponse {
+  id?: string
+  readyState?: string
+  state?: string
+  url?: string
+  meta?: {
+    githubCommitSha?: string
+    gitCommitSha?: string
+    githubCommitRef?: string
+    gitCommitRef?: string
+  }
 }
 
 interface VercelApiErrorPayload {
@@ -137,7 +153,23 @@ export interface SkillRunnerWorkerProject {
   latestDeploymentId?: string
   latestDeploymentReadyState?: string
   latestDeploymentCreatedAt?: number
+  latestDeploymentGitSha?: string
+  latestDeploymentGitBranch?: string
+  desiredWorkerBranch?: string
+  desiredWorkerGitSha?: string
+  workerShellVersion?: string
+  workerReportedBranch?: string
+  runtimeManifestVersion?: string
+  shellVersionStatus?: "current" | "outdated" | "unknown"
 }
+
+let desiredWorkerVersionCache:
+  | {
+      branch: string
+      sha?: string
+      checkedAt: number
+    }
+  | undefined
 
 function normalizeHost(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
@@ -260,6 +292,138 @@ function resolveWorkerGitBranch(): string {
   } catch {
     return "main"
   }
+}
+
+function normalizeGitSha(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed || undefined
+}
+
+async function resolveDesiredWorkerGitSha(branch: string): Promise<string | undefined> {
+  const now = Date.now()
+  if (
+    desiredWorkerVersionCache &&
+    desiredWorkerVersionCache.branch === branch &&
+    now - desiredWorkerVersionCache.checkedAt < 30_000
+  ) {
+    return desiredWorkerVersionCache.sha
+  }
+
+  const envSha = process.env.VERCEL_GIT_COMMIT_SHA?.trim() || undefined
+  if (envSha && (!process.env.VERCEL_GIT_COMMIT_REF || process.env.VERCEL_GIT_COMMIT_REF.trim() === branch)) {
+    desiredWorkerVersionCache = {
+      branch,
+      sha: envSha,
+      checkedAt: now
+    }
+    return envSha
+  }
+
+  try {
+    const remote = execFileSync("git", ["ls-remote", "origin", `refs/heads/${branch}`], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim()
+    const sha = remote.split(/\s+/)[0]?.trim() || undefined
+    desiredWorkerVersionCache = {
+      branch,
+      sha,
+      checkedAt: now
+    }
+    return sha
+  } catch {
+    desiredWorkerVersionCache = {
+      branch,
+      sha: undefined,
+      checkedAt: now
+    }
+    return undefined
+  }
+}
+
+async function getDeploymentDetails(
+  accessToken: string,
+  team: VercelTeam,
+  deploymentId: string
+): Promise<VercelDeploymentDetailsResponse | null> {
+  const apiUrl = new URL(`https://api.vercel.com/v13/deployments/${deploymentId}`)
+  apiUrl.searchParams.set("teamId", team.id)
+
+  const response = await fetch(apiUrl.toString(), {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    cache: "no-store"
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Failed to inspect runner deployment: ${response.status} ${errorText}`)
+  }
+
+  return (await response.json()) as VercelDeploymentDetailsResponse
+}
+
+async function fetchWorkerVersionPayload(workerBaseUrl: string): Promise<SkillRunnerWorkerVersionPayload | null> {
+  try {
+    const response = await fetch(new URL("/api/skill-runner-worker/version", workerBaseUrl).toString(), {
+      cache: "no-store"
+    })
+    if (!response.ok) {
+      return null
+    }
+
+    const data = (await response.json()) as Partial<SkillRunnerWorkerVersionPayload>
+    return {
+      workerMode: data.workerMode === "self-hosted-worker" ? "self-hosted-worker" : "control-plane",
+      workerShellVersion: normalizeGitSha(data.workerShellVersion),
+      workerBranch: data.workerBranch?.trim() || undefined,
+      runtimeManifestVersion: typeof data.runtimeManifestVersion === "string" ? data.runtimeManifestVersion : ""
+    }
+  } catch {
+    return null
+  }
+}
+
+function resolveShellVersionStatus({
+  desiredGitSha,
+  deployedGitSha,
+  reportedGitSha,
+  runtimeManifestVersion
+}: {
+  desiredGitSha?: string
+  deployedGitSha?: string
+  reportedGitSha?: string
+  runtimeManifestVersion?: string
+}): "current" | "outdated" | "unknown" {
+  if (runtimeManifestVersion && runtimeManifestVersion !== SKILL_RUNNER_RUNTIME_MANIFEST_VERSION) {
+    return "outdated"
+  }
+
+  if (desiredGitSha && reportedGitSha) {
+    return desiredGitSha === reportedGitSha ? "current" : "outdated"
+  }
+
+  if (desiredGitSha && deployedGitSha) {
+    return desiredGitSha === deployedGitSha ? "current" : "outdated"
+  }
+
+  return "unknown"
+}
+
+export function resolveSkillRunnerWorkerStatus(
+  project: Pick<
+    SkillRunnerWorkerProject,
+    "workerBaseUrl" | "missingEnvKeys" | "latestDeploymentReadyState" | "shellVersionStatus"
+  > | null
+): SkillRunnerWorkerStatus {
+  if (!project) return "unconfigured"
+  if (!project.workerBaseUrl) return "provisioning"
+  if (project.missingEnvKeys && project.missingEnvKeys.length > 0) return "error"
+  if (project.latestDeploymentReadyState && project.latestDeploymentReadyState !== "READY") return "provisioning"
+  if (project.shellVersionStatus === "outdated") return "outdated"
+  return "ready"
 }
 
 function buildWorkerEnvInputs(): VercelProjectEnvInput[] {
@@ -656,6 +820,24 @@ export async function findSkillRunnerWorkerProject(
   }
 
   const latestDeployment = resolveLatestDeployment(exactMatch)
+  const desiredWorkerBranch = resolveWorkerGitBranch()
+  const desiredWorkerGitSha = await resolveDesiredWorkerGitSha(desiredWorkerBranch)
+  const latestDeploymentDetails =
+    latestDeployment?.id && latestDeployment.readyState === "READY"
+      ? await getDeploymentDetails(accessToken, team, latestDeployment.id)
+      : latestDeployment?.id
+        ? await getDeploymentDetails(accessToken, team, latestDeployment.id)
+        : null
+  const latestDeploymentGitSha = normalizeGitSha(
+    latestDeploymentDetails?.meta?.githubCommitSha || latestDeploymentDetails?.meta?.gitCommitSha
+  )
+  const latestDeploymentGitBranch =
+    latestDeploymentDetails?.meta?.githubCommitRef?.trim() || latestDeploymentDetails?.meta?.gitCommitRef?.trim()
+  const workerBaseUrl = resolveWorkerBaseUrl(exactMatch)
+  const workerVersion =
+    workerBaseUrl && (latestDeployment?.readyState === "READY" || latestDeployment?.state === "READY")
+      ? await fetchWorkerVersionPayload(workerBaseUrl)
+      : null
   const missingEnvKeys = await getWorkerProjectMissingEnvKeys(
     accessToken,
     team,
@@ -663,16 +845,30 @@ export async function findSkillRunnerWorkerProject(
     latestDeployment?.id,
     latestDeployment?.createdAt
   )
+  const shellVersionStatus = resolveShellVersionStatus({
+    desiredGitSha: desiredWorkerGitSha,
+    deployedGitSha: latestDeploymentGitSha,
+    reportedGitSha: workerVersion?.workerShellVersion,
+    runtimeManifestVersion: workerVersion?.runtimeManifestVersion
+  })
 
   return {
     projectId: exactMatch.id,
     projectName: exactMatch.name,
-    workerBaseUrl: resolveWorkerBaseUrl(exactMatch),
+    workerBaseUrl,
     dashboardUrl: buildDashboardUrl(team, exactMatch.name),
     missingEnvKeys,
     latestDeploymentId: latestDeployment?.id,
     latestDeploymentReadyState: latestDeployment?.readyState || latestDeployment?.state,
-    latestDeploymentCreatedAt: latestDeployment?.createdAt
+    latestDeploymentCreatedAt: latestDeployment?.createdAt,
+    latestDeploymentGitSha,
+    latestDeploymentGitBranch,
+    desiredWorkerBranch,
+    desiredWorkerGitSha,
+    workerShellVersion: workerVersion?.workerShellVersion,
+    workerReportedBranch: workerVersion?.workerBranch,
+    runtimeManifestVersion: workerVersion?.runtimeManifestVersion,
+    shellVersionStatus
   }
 }
 
@@ -681,7 +877,11 @@ export async function installSkillRunnerWorkerProject(
   team: VercelTeam
 ): Promise<SkillRunnerWorkerProject> {
   const existing = await findSkillRunnerWorkerProject(accessToken, team)
-  if (existing?.workerBaseUrl && (!existing.missingEnvKeys || existing.missingEnvKeys.length === 0)) {
+  if (
+    existing?.workerBaseUrl &&
+    (!existing.missingEnvKeys || existing.missingEnvKeys.length === 0) &&
+    existing.shellVersionStatus !== "outdated"
+  ) {
     return existing
   }
 

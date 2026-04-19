@@ -41,6 +41,9 @@ interface RunnerValidationResult {
     workerBaseUrl?: string
     dashboardUrl?: string
     missingEnvKeys?: string[]
+    shellVersionStatus?: "current" | "outdated" | "unknown"
+    desiredWorkerGitSha?: string
+    workerShellVersion?: string
   }
 }
 
@@ -166,7 +169,9 @@ export function SkillRunnerTeamSettingsPanel({ items }: SkillRunnerTeamSettingsP
               ? "provisioning"
               : validationResult.project.missingEnvKeys?.length
                 ? "error"
-                : "ready"
+                : validationResult.project.shellVersionStatus === "outdated"
+                  ? "outdated"
+                  : "ready"
           }
         : {
             executionMode: "self-hosted",
@@ -270,6 +275,7 @@ export function SkillRunnerTeamSettingsPanel({ items }: SkillRunnerTeamSettingsP
                       <SelectItem value="unconfigured">Unconfigured</SelectItem>
                       <SelectItem value="provisioning">Provisioning</SelectItem>
                       <SelectItem value="ready">Ready</SelectItem>
+                      <SelectItem value="outdated">Outdated</SelectItem>
                       <SelectItem value="error">Error</SelectItem>
                     </SelectContent>
                   </Select>
@@ -375,7 +381,9 @@ export function SkillRunnerTeamSettingsPanel({ items }: SkillRunnerTeamSettingsP
                       <div className="text-[15px] font-medium text-[#ededed]">
                         {validationResult.project.missingEnvKeys?.length
                           ? "Runner project needs configuration"
-                          : "Runner project ready"}
+                          : validationResult.project.shellVersionStatus === "outdated"
+                            ? "Runner project needs update"
+                            : "Runner project ready"}
                       </div>
                       <div className="mt-2 space-y-1 text-[13px]">
                         <div className="text-[#888]">{validationResult.project.projectName}</div>
@@ -383,6 +391,14 @@ export function SkillRunnerTeamSettingsPanel({ items }: SkillRunnerTeamSettingsP
                         <div className="text-[#666]">
                           Worker URL: {validationResult.project.workerBaseUrl || "No URL detected yet"}
                         </div>
+                        {validationResult.project.workerShellVersion ? (
+                          <div className="text-[#666]">
+                            Worker Shell: {validationResult.project.workerShellVersion.slice(0, 8)}
+                            {validationResult.project.desiredWorkerGitSha
+                              ? ` (target ${validationResult.project.desiredWorkerGitSha.slice(0, 8)})`
+                              : ""}
+                          </div>
+                        ) : null}
                       </div>
                       {validationResult.project.dashboardUrl ? (
                         <a
@@ -410,6 +426,13 @@ export function SkillRunnerTeamSettingsPanel({ items }: SkillRunnerTeamSettingsP
                           <div className="text-[#666]">
                             Self-hosted mode should use team-owned Blob setup. Retry provisioning to repair any partial
                             install.
+                          </div>
+                        </div>
+                      ) : validationResult.project.shellVersionStatus === "outdated" ? (
+                        <div className="mt-3 space-y-2 text-[12px] leading-[18px] text-[#888]">
+                          <div>The team-owned runner is deployed on an older shell version.</div>
+                          <div className="text-[#666]">
+                            Update the runner so new self-hosted runs pick up the latest shell code automatically.
                           </div>
                         </div>
                       ) : (

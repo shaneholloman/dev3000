@@ -3,7 +3,17 @@ import { getCurrentUserFromRequest } from "@/lib/auth"
 import { resolveDevAgentRunner } from "@/lib/cloud/dev-agent-runner"
 import { type DevAgent, ensureDevAgentAshArtifactPrepared, getDevAgent, incrementDevAgentUsage } from "@/lib/dev-agents"
 import { SKILL_RUNNER_WORKER_MODE_ENV } from "@/lib/skill-runner-config"
-import { getSkillRunnerForExecution, getSkillRunnerTeamSettings, incrementSkillRunnerUsage } from "@/lib/skill-runners"
+import {
+  findSkillRunnerWorkerProject,
+  installSkillRunnerWorkerProject,
+  resolveSkillRunnerWorkerStatus
+} from "@/lib/skill-runner-worker"
+import {
+  getSkillRunnerForExecution,
+  getSkillRunnerTeamSettings,
+  incrementSkillRunnerUsage,
+  updateSkillRunnerTeamSettings
+} from "@/lib/skill-runners"
 import {
   buildIdentityProps,
   buildTelemetryEvent,
@@ -396,6 +406,13 @@ export async function POST(request: Request) {
       )
 
       if (teamSettings.executionMode === "self-hosted" && process.env[SKILL_RUNNER_WORKER_MODE_ENV] !== "1") {
+        const runnerTeamIdentity = {
+          id: team.id,
+          slug: team.slug,
+          name: team.name,
+          isPersonal: Boolean(team.isPersonal)
+        }
+
         if (!teamSettings.workerProjectId) {
           return Response.json(
             {
@@ -406,7 +423,33 @@ export async function POST(request: Request) {
           )
         }
 
-        if (!teamSettings.workerBaseUrl) {
+        const resolvedProject = await findSkillRunnerWorkerProject(accessToken, runnerTeamIdentity)
+        if (!resolvedProject) {
+          return Response.json(
+            {
+              success: false,
+              error: `Self-hosted skill-runner mode is enabled for ${team.name}, but no runner project is configured yet in /admin.`
+            },
+            { status: 409, headers: corsHeaders }
+          )
+        }
+
+        let resolvedWorkerProject = resolvedProject
+        let resolvedWorkerStatus = resolveSkillRunnerWorkerStatus(resolvedWorkerProject)
+
+        if (resolvedWorkerStatus === "outdated") {
+          resolvedWorkerProject = await installSkillRunnerWorkerProject(accessToken, runnerTeamIdentity)
+          resolvedWorkerStatus = resolveSkillRunnerWorkerStatus(resolvedWorkerProject)
+        }
+
+        await updateSkillRunnerTeamSettings(runnerTeamIdentity, {
+          executionMode: "self-hosted",
+          workerProjectId: resolvedWorkerProject.projectId,
+          workerBaseUrl: resolvedWorkerProject.workerBaseUrl || "",
+          workerStatus: resolvedWorkerStatus
+        })
+
+        if (resolvedWorkerStatus === "provisioning" || !resolvedWorkerProject.workerBaseUrl) {
           return Response.json(
             {
               success: false,
@@ -416,7 +459,17 @@ export async function POST(request: Request) {
           )
         }
 
-        if (teamSettings.workerStatus && teamSettings.workerStatus !== "ready") {
+        if (resolvedWorkerStatus === "outdated") {
+          return Response.json(
+            {
+              success: false,
+              error: `Self-hosted skill-runner mode is enabled for ${team.name}, but the runner project is updating to the latest shell version.`
+            },
+            { status: 409, headers: corsHeaders }
+          )
+        }
+
+        if (resolvedWorkerStatus !== "ready") {
           return Response.json(
             {
               success: false,
@@ -426,7 +479,7 @@ export async function POST(request: Request) {
           )
         }
 
-        selfHostedWorkerBaseUrl = teamSettings.workerBaseUrl
+        selfHostedWorkerBaseUrl = resolvedWorkerProject.workerBaseUrl
       }
     } else if (typeof body.devAgentId === "string" && body.devAgentId.trim().length > 0) {
       devAgent = await getDevAgent(body.devAgentId.trim())

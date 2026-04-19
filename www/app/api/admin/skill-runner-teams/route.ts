@@ -33,6 +33,7 @@ export async function PATCH(request: Request) {
     body.workerStatus === "unconfigured" ||
     body.workerStatus === "provisioning" ||
     body.workerStatus === "ready" ||
+    body.workerStatus === "outdated" ||
     body.workerStatus === "error"
       ? body.workerStatus
       : undefined

@@ -3,6 +3,7 @@ import { SKILL_RUNNER_WORKER_PROJECT_NAME } from "@/lib/skill-runner-config"
 import {
   findSkillRunnerWorkerProject,
   installSkillRunnerWorkerProject,
+  resolveSkillRunnerWorkerStatus,
   SkillRunnerWorkerSetupError
 } from "@/lib/skill-runner-worker"
 import { getSkillRunnerTeamSettings, updateSkillRunnerTeamSettings } from "@/lib/skill-runners"
@@ -41,16 +42,6 @@ function toUserIdentity(user: { id: string; name?: string; username: string }): 
     name: user.name || user.username,
     username: user.username
   }
-}
-
-function getWorkerStatus(
-  project: { workerBaseUrl?: string; missingEnvKeys?: string[]; latestDeploymentReadyState?: string } | null
-): "unconfigured" | "provisioning" | "ready" | "error" {
-  if (!project) return "unconfigured"
-  if (!project.workerBaseUrl) return "provisioning"
-  if (project.missingEnvKeys && project.missingEnvKeys.length > 0) return "error"
-  if (project.latestDeploymentReadyState && project.latestDeploymentReadyState !== "READY") return "provisioning"
-  return "ready"
 }
 
 async function persistWorkerProject(
@@ -111,7 +102,7 @@ async function persistWorkerProject(
     })
   }
 
-  const resolvedWorkerStatus = getWorkerStatus(project)
+  const resolvedWorkerStatus = resolveSkillRunnerWorkerStatus(project)
   const settings = await updateSkillRunnerTeamSettings(team, {
     executionMode: "self-hosted",
     workerProjectId: project.projectId,

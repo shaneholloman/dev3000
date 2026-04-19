@@ -96,6 +96,9 @@ interface RunnerValidationResult {
     workerBaseUrl?: string
     dashboardUrl?: string
     missingEnvKeys?: string[]
+    shellVersionStatus?: "current" | "outdated" | "unknown"
+    desiredWorkerGitSha?: string
+    workerShellVersion?: string
   }
   settings?: {
     executionMode?: SkillRunnerExecutionMode
@@ -277,6 +280,10 @@ export default function DevAgentRunClient({
       return "The team runner still needs repair before it can start runs."
     }
 
+    if (/runner is out of date|runner project is updating to the latest shell version/i.test(message)) {
+      return "The team runner is updating to the latest shell version. Retry in a moment."
+    }
+
     return message
   }
 
@@ -303,7 +310,13 @@ export default function DevAgentRunClient({
     setLocalSkillRunnerWorkerBaseUrl(result.project?.workerBaseUrl || "")
     setLocalSkillRunnerWorkerStatus(
       result.settings?.workerStatus ||
-        (!result.project?.workerBaseUrl ? "provisioning" : result.project?.missingEnvKeys?.length ? "error" : "ready")
+        (!result.project?.workerBaseUrl
+          ? "provisioning"
+          : result.project?.missingEnvKeys?.length
+            ? "error"
+            : result.project?.shellVersionStatus === "outdated"
+              ? "outdated"
+              : "ready")
     )
   }
 
@@ -352,9 +365,11 @@ export default function DevAgentRunClient({
   }
 
   const canRetryWorkerSetup =
+    localSkillRunnerWorkerStatus === "outdated" ||
     localSkillRunnerWorkerStatus === "error" ||
     !workerSetupResult?.installed ||
-    Boolean(workerSetupResult.project?.missingEnvKeys?.length)
+    Boolean(workerSetupResult.project?.missingEnvKeys?.length) ||
+    workerSetupResult.project?.shellVersionStatus === "outdated"
 
   useEffect(() => {
     try {
@@ -1194,7 +1209,9 @@ export default function DevAgentRunClient({
                       <div className="text-[15px] font-medium text-[#ededed]">
                         {workerSetupResult.project.missingEnvKeys?.length
                           ? "Runner project needs configuration"
-                          : "Runner project ready"}
+                          : workerSetupResult.project.shellVersionStatus === "outdated"
+                            ? "Runner project needs update"
+                            : "Runner project ready"}
                       </div>
                       <div className="mt-2 space-y-1 text-[13px]">
                         <div className="text-[#888]">{workerSetupResult.project.projectName}</div>
@@ -1202,6 +1219,14 @@ export default function DevAgentRunClient({
                         <div className="text-[#666]">
                           Worker URL: {workerSetupResult.project.workerBaseUrl || "No URL detected yet"}
                         </div>
+                        {workerSetupResult.project.workerShellVersion ? (
+                          <div className="text-[#666]">
+                            Worker Shell: {workerSetupResult.project.workerShellVersion.slice(0, 8)}
+                            {workerSetupResult.project.desiredWorkerGitSha
+                              ? ` (target ${workerSetupResult.project.desiredWorkerGitSha.slice(0, 8)})`
+                              : ""}
+                          </div>
+                        ) : null}
                       </div>
                       {workerSetupResult.project.dashboardUrl ? (
                         <a
@@ -1222,6 +1247,13 @@ export default function DevAgentRunClient({
                         <div className="mt-3 flex items-start gap-2 text-[12px] leading-[18px] text-[#888]">
                           <Loader2 className="mt-[2px] size-3 shrink-0 animate-spin text-[#666]" />
                           <span>The runner project is redeploying with its new Blob connection.</span>
+                        </div>
+                      ) : workerSetupResult.project.shellVersionStatus === "outdated" ? (
+                        <div className="mt-3 space-y-2 text-[12px] leading-[18px] text-[#888]">
+                          <div>This team-owned runner is on an older shell version.</div>
+                          <div className="text-[#666]">
+                            Update it so new self-hosted runs pick up the latest runner shell automatically.
+                          </div>
                         </div>
                       ) : workerSetupResult.project.missingEnvKeys?.length ? (
                         <div className="mt-3 space-y-2 text-[12px] leading-[18px] text-[#888]">
@@ -1281,6 +1313,8 @@ export default function DevAgentRunClient({
                     </span>
                   ) : workerSetupNeedsAction && didOpenWorkerSetupAction ? (
                     "Retry Setup"
+                  ) : workerSetupResult?.project?.shellVersionStatus === "outdated" ? (
+                    "Update Runner"
                   ) : workerSetupResult?.installed ? (
                     "Retry Setup"
                   ) : (
@@ -1306,6 +1340,7 @@ export default function DevAgentRunClient({
                     !workerSetupResult?.installed ||
                     !workerSetupResult.project?.workerBaseUrl ||
                     Boolean(workerSetupResult.project?.missingEnvKeys?.length) ||
+                    workerSetupResult.project?.shellVersionStatus === "outdated" ||
                     localSkillRunnerWorkerStatus !== "ready"
                   }
                   className="h-9 rounded-md bg-[#ededed] px-4 text-[13px] font-medium text-[#0a0a0a] hover:bg-white disabled:opacity-40"
