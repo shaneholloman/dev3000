@@ -2105,16 +2105,21 @@ async function createAndSaveBaseSnapshot(
 
     if (!resolvedSharedClaude) {
       await reportProgress("Installing Claude package in shared snapshot...")
-      const sharedRuntimeInstall = await runCmd("bun", ["add", CLAUDE_CODE_PACKAGE], {
-        cwd: claudeInstallRoot,
-        env: sharedHomeEnv
-      })
+      const sharedRuntimeInstall = await runCmd(
+        "sh",
+        ["-lc", `export PATH="${sharedHomeEnv.PATH}" && cd "${claudeInstallRoot}" && bun add ${CLAUDE_CODE_PACKAGE}`],
+        { env: sharedHomeEnv }
+      )
       if (sharedRuntimeInstall.exitCode === 0) {
         await reportProgress("Running Claude postinstall in shared snapshot...")
-        const sharedRuntimePostinstall = await runCmd("bun", ["./node_modules/@anthropic-ai/claude-code/install.cjs"], {
-          cwd: claudeInstallRoot,
-          env: sharedHomeEnv
-        })
+        const sharedRuntimePostinstall = await runCmd(
+          "sh",
+          [
+            "-lc",
+            `export PATH="${sharedHomeEnv.PATH}" && cd "${claudeInstallRoot}" && bun "./node_modules/@anthropic-ai/claude-code/install.cjs"`
+          ],
+          { env: sharedHomeEnv }
+        )
         if (sharedRuntimePostinstall.exitCode === 0) {
           resolvedSharedClaude = await resolveInstalledClaudePath()
         } else {
@@ -2131,10 +2136,11 @@ async function createAndSaveBaseSnapshot(
 
     if (!resolvedSharedClaude) {
       await reportProgress("Retrying Claude package install with pnpm in shared snapshot...")
-      const sharedRuntimePnpmInstall = await runCmd("pnpm", ["add", CLAUDE_CODE_PACKAGE], {
-        cwd: claudeInstallRoot,
-        env: sharedHomeEnv
-      })
+      const sharedRuntimePnpmInstall = await runCmd(
+        "sh",
+        ["-lc", `export PATH="${sharedHomeEnv.PATH}" && cd "${claudeInstallRoot}" && pnpm add ${CLAUDE_CODE_PACKAGE}`],
+        { env: sharedHomeEnv }
+      )
       if (sharedRuntimePnpmInstall.exitCode === 0) {
         const sharedRuntimePnpmPostinstall = await runCmd(
           "sh",
@@ -2160,9 +2166,11 @@ async function createAndSaveBaseSnapshot(
 
     if (!resolvedSharedClaude) {
       await reportProgress("Retrying Claude package install globally in shared snapshot...")
-      const sharedRuntimeGlobalInstall = await runCmd("bun", ["add", "-g", CLAUDE_CODE_PACKAGE], {
-        env: sharedHomeEnv
-      })
+      const sharedRuntimeGlobalInstall = await runCmd(
+        "sh",
+        ["-lc", `export PATH="${sharedHomeEnv.PATH}" && bun add -g ${CLAUDE_CODE_PACKAGE}`],
+        { env: sharedHomeEnv }
+      )
       if (sharedRuntimeGlobalInstall.exitCode === 0) {
         resolvedSharedClaude = await resolveInstalledClaudePath()
       } else {
